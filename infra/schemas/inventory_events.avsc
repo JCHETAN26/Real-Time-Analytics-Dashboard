@@ -1,0 +1,14 @@
+ {
+  "type": "record",
+  "name": "InventoryEvent",
+  "namespace": "com.streamsense.events",
+  "fields": [
+    { "name": "product_id", "type": "string" },
+    { "name": "product_name", "type": "string" },
+    { "name": "category", "type": "string" },
+    { "name": "stock_adjustment", "type": "int" },
+    { "name": "stock_on_hand", "type": "int" },
+    { "name": "reason", "type": "string" },
+    { "name": "event_time", "type": { "type": "long", "logicalType": "timestamp-millis" } }
+  ]
+}

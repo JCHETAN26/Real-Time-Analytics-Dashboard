@@ -1,0 +1,17 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.streamsense.events",
+  "fields": [
+    { "name": "order_id", "type": "string" },
+    { "name": "user_id", "type": "string" },
+    { "name": "product_id", "type": "string" },
+    { "name": "product_name", "type": "string" },
+    { "name": "category", "type": "string" },
+    { "name": "order_status", "type": "string" },
+    { "name": "revenue", "type": "double" },
+    { "name": "quantity", "type": "int" },
+    { "name": "region", "type": "string" },
+    { "name": "order_time", "type": { "type": "long", "logicalType": "timestamp-millis" } }
+  ]
+}

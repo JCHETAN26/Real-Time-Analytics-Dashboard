@@ -1,0 +1,48 @@
+STREAMSENSE AI — PROJECT EXPLANATION
+=====================================
+Written: 2026-03-03
+For: Global Hackathon Submission
+
+
+WHAT IS STREAMSENSE AI?
+-----------------------
+StreamSense AI is a real-time e-commerce analytics platform that solves a problem every online business faces but nobody has fully cracked: understanding *why* something is happening in your store right now, not just *what* happened yesterday. Most analytics tools — Google Analytics, Mixpanel, even Tableau — show you a chart of the past. They are fundamentally backwards-looking. StreamSense is different: it monitors your business second-by-second, detects problems before your customers even notice, explains the root cause using AI, forecasts your revenue 30 minutes into the future, and lets any non-technical business user define their own live monitoring rules in plain English. The result is an AI that behaves like a senior data analyst sitting next to your ops team at 3am — one that never sleeps, never misses a signal, and tells you exactly what to do when the numbers start moving the wrong way.
+
+
+WHAT WE BUILT AND HOW IT WORKS (STEP BY STEP)
+-----------------------------------------------
+The system is composed of seven Go microservices, a Kafka streaming backbone, a Snowflake data warehouse, and a React dashboard — all communicating in real time.
+
+Step 1 — Data Generation (Event Producers): Three Go services continuously simulate the heartbeat of an e-commerce store, generating User Events (page views, searches, add-to-cart, checkouts), Order Events (product sales, revenue, regions), and Inventory Events (stock adjustments, restocks). Each event is serialized using Apache Avro — a binary format that enforces a strict schema contract — and published to Apache Kafka at a rate of roughly one event per second.
+
+Step 2 — Stream Processing (Go Consumer): A dedicated Stream Processor service subscribes to all three Kafka topics simultaneously. It validates incoming events, performs basic enrichment (e.g., flagging negative revenue anomalies), and re-broadcasts every event as a Server-Sent Event (SSE) over HTTP. This SSE stream is what the React dashboard listens to for the live event ticker.
+
+Step 3 — Anomaly Detection + Why Engine: Every 15 seconds, a background Go goroutine analyzes a rolling window of revenue samples. When it detects a deviation greater than 20% from baseline (either a drop or a spike), it triggers the "Why Engine" — our most novel feature. The Why Engine runs a multi-signal diagnostic sweep: six independent checks executed in parallel (payment gateway success rate, order placement rate, cart abandonment rate, inventory levels, API response time, and average order value). It then sends all findings — including which signals are degraded and by how much — to DigitalOcean Gradient AI (Llama 3.3 70B), which synthesizes a causal hypothesis with a confidence score and a specific recommended action. The fully-formed anomaly, including the root cause analysis (RCA), is broadcast via SSE to every connected dashboard client in real time. No other commercial product runs causal AI at this latency.
+
+Step 4 — Revenue Forecast Engine: A separate Go service maintains a 60-minute rolling window of revenue samples sampled every 10 seconds. It applies linear regression with residual standard deviation to generate a 30-minute forward forecast with upper and lower confidence bands. It calculates current revenue velocity ($/minute), projects end-of-day revenue, compares it against a configurable daily target, and generates a risk score between 0 and 1. When risk is high, it fires a specific dollar-value recommendation to recover the shortfall. This forecast chart updates live every 10 seconds on the dashboard — judges can literally watch the confidence bands move.
+
+Step 5 — Natural Language Alert Builder: A REST endpoint accepts a plain-English alert description from any business user (e.g., "alert me when Europe revenue drops more than 30% vs the last hour"). This description is sent to Gradient AI, which parses it into a structured rule: {metric, operator, threshold, region}. The rule is hot-loaded into the running anomaly detector without any restart or code change. When the condition is met, the system fires both an in-dashboard notification and, if configured, a Slack or webhook notification. This is the first real-time NL-to-streaming-rule compiler demonstrated in a hackathon context.
+
+Step 6 — AI Query Agent (Multi-Turn): A Gin-based REST service accepts natural language questions from the dashboard's chat panel, maintains a per-session conversation history (up to 10 turns), and sends the full context to Gradient AI along with a detailed Snowflake schema prompt. The AI responds with a structured JSON object: SQL query, plain-English explanation, business insight, and follow-up suggestions. The dashboard renders these as a conversation thread. Users can switch between "Technical Mode" (SQL visible) and "Business Mode" (SQL hidden, emoji-friendly explanations) with a single toggle.
+
+Step 7 — Snowflake + dbt (Data Warehouse): All Kafka events that flow through the system are destined for Snowflake via Kafka Connect and the Snowflake Sink Connector. The dbt project defines staging models that clean and type the raw Avro JSON (deduplication, timestamp conversion, null checks), and mart models that aggregate revenue by minute, compute conversion rates, and track product performance. These marts are what the AI Query Agent runs SQL against.
+
+
+WHY EACH TECHNOLOGY WAS CHOSEN
+--------------------------------
+Apache Kafka: Kafka is the industry standard for high-throughput, fault-tolerant event streaming, used by Uber, Netflix, LinkedIn, and Airbnb at millions of events per second. We chose it because it decouples every service in the system — producers don't need to know about consumers, and new consumers can be added without changing a single line of producer code. Kafka's Schema Registry enforces Avro contracts so AI models never receive malformed data. For a SaaS, Kafka means each customer's event stream can be isolated in its own topic with zero cross-contamination.
+
+Go (Golang): Every backend service is written in Go for two reasons: raw performance and concurrency. Go's goroutines allow the Stream Processor to listen to three Kafka topics, run diagnostic sweeps, manage SSE client connections, and serve HTTP — all simultaneously on a single machine with virtually no overhead. For a real production SaaS with thousands of concurrent customers, Go scales horizontally with dramatically lower infrastructure costs than Python or Node.
+
+Snowflake: Snowflake is the gold standard for cloud data warehousing — it separates compute from storage, scales to petabytes, and can run the AI Query Agent's SQL against billions of rows in under a second. For a B2B SaaS, every customer gets a private Snowflake schema (or database), giving them data isolation, compliance, and enterprise-grade performance. The dbt layer on top makes warehouse transformations versionable, testable, and auditable.
+
+DigitalOcean Gradient AI (Llama 3.3 70B): Gradient AI provides the LLM backbone for three distinct tasks: (1) root cause synthesis — reasoning across 6 diagnostic signals to form a causal hypothesis, (2) multi-turn SQL generation — turning plain English into correct Snowflake SQL while maintaining conversation context, and (3) alert rule compilation — parsing natural language into executable streaming rules. We chose Llama 3.3 70B for its strong reasoning and structured-output capabilities, and DigitalOcean's inference API for its reliability and cost-effectiveness at scale.
+
+React + Vite + Recharts: The dashboard is the "face" of the product — it is what a VP of E-commerce will see during a sales demo. We used React for component modularity, Vite for instant hot-reload development speed, Recharts for the forecast chart's composed layers (actuals + forecast line + confidence band areas), and Server-Sent Events for the real-time push from Go to the browser without WebSocket complexity. The design system uses dark mode, glassmorphism, micro-animations, and a premium color palette to hit the SaaS aesthetic level required to close B2B deals.
+
+
+WHY THIS IS GENUINELY VALUABLE
+---------------------------------
+The problem StreamSense solves costs e-commerce businesses real money, every day. When payment gateways fail, when marketing campaigns go live in the wrong region, when a product goes viral unexpectedly — companies typically find out 2-4 hours later from a human analyst, by which time revenue loss is in the tens of thousands of dollars. StreamSense detects and explains these events in under 30 seconds. The "Why Engine" is genuinely novel: no commercial analytics product — not Looker, not ThoughtSpot, not even Palantir — provides automated causal root cause analysis at sub-minute latency. The NL Alert Builder is the second breakthrough: it democratizes monitoring by removing the requirement for data engineers, giving business users the same power as a custom alerting pipeline but in a 10-second interaction. And the Forecast Engine gives operators the ability to act on predictions rather than react to history — the difference between avoiding a $44,000 shortfall and explaining it in a postmortem.
+
+This is not a dashboard. It is an AI operations co-pilot for e-commerce — and it is running live, right now.

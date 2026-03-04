@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "UserEvent",
+  "namespace": "com.streamsense.events",
+  "fields": [
+    { "name": "event_id", "type": "string" },
+    { "name": "user_id", "type": "string" },
+    { "name": "event_type", "type": "string" },
+    { "name": "page", "type": "string" },
+    { "name": "session_id", "type": "string" },
+    { "name": "device_type", "type": "string" },
+    { "name": "event_time", "type": { "type": "long", "logicalType": "timestamp-millis" } }
+  ]
+}
