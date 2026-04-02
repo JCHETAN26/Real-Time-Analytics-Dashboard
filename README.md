@@ -140,19 +140,7 @@ Dashboard available at `http://localhost:8080`
 
 ---
 
-## 📄 Resume Bullets
 
-- **Architected** a 7-service real-time analytics platform (Go, Apache Kafka, Snowflake) processing 3 concurrent e-commerce event streams with sub-second end-to-end latency.
-- **Built** an AI causal root cause engine using Gradient AI (Llama 3.3 70B) that runs 6 parallel diagnostic checks on revenue anomalies, cutting incident detection time from 2–4 hours to under 30 seconds.
-- **Engineered** a natural language → live streaming rule compiler that hot-loads Kafka monitors with zero downtime, and a regression-based forecast model projecting 30-minute revenue with dynamic confidence bands.
-
----
-
-## 🤝 Contributing
-
-Pull requests welcome. For major changes, please open an issue first.
-
----
 
 ## 📝 License
 
