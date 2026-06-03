@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25.x"
+
+jobs:
+  # ── Pure-Go AI services: unit tests for the guardrail, eval grader, and
+  #    diagnostics engine. No CGO, no external services required. ──────────────
+  ai-unit-tests:
+    name: AI services unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: query-agent — guardrail + eval tests
+        working-directory: ai-layer/query-agent
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./guard/... ./eval/... -v
+
+      - name: anomaly-detector — diagnostics tests
+        working-directory: ai-layer/anomaly-detector
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./... -v
+
+      - name: forecast-engine — build
+        working-directory: ai-layer/forecast-engine
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
+
+  # ── Text-to-SQL evaluation harness, run offline (deterministic, no API key).
+  #    Fails the build if the best prompt variant scores below the 70% bar. ────
+  text-to-sql-eval:
+    name: Text-to-SQL eval (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run eval benchmark
+        working-directory: ai-layer/query-agent
+        env:
+          CGO_ENABLED: "0"
+        run: go run ./eval/cmd/runeval -mode offline -json eval-report.json
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: ai-layer/query-agent/eval-report.json
+
+  # ── query-agent main package links the Snowflake driver, which needs CGO.
+  #    Ubuntu runners ship gcc, so this verifies the production binary builds. ─
+  query-agent-build:
+    name: query-agent build (CGO)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build query-agent (Snowflake driver)
+        working-directory: ai-layer/query-agent
+        env:
+          CGO_ENABLED: "1"
+        run: go build ./...
+
+  # ── Kafka producers + stream processor. confluent-kafka-go bundles
+  #    librdkafka via CGO; gcc is available on the runner. ─────────────────────
+  streaming-build:
+    name: Streaming services build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - producers/user-events
+          - producers/order-events
+          - producers/inventory-events
+          - processor/stream-processor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build ${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
+        env:
+          CGO_ENABLED: "1"
+        run: go build ./...
+
+  # ── dbt model graph validation: every ref()/source() resolves, no cycles. ──
+  dbt-validate:
+    name: dbt graph validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate dbt ref/source graph
+        working-directory: warehouse/dbt
+        run: python3 validate_refs.py
+
+  # ── go vet across the AI modules to catch suspicious constructs. ────────────
+  vet:
+    name: go vet
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - ai-layer/query-agent
+          - ai-layer/anomaly-detector
+          - ai-layer/forecast-engine
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: go vet ${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
+        env:
+          CGO_ENABLED: "0"
+        run: go vet ./...

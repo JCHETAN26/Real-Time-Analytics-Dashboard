@@ -1,0 +1,15 @@
+version: 2
+
+# Raw layer: tables landed directly from Kafka by the Snowflake Sink Connector.
+# Each row stores the Avro-decoded event payload in a VARIANT column named `src`.
+sources:
+  - name: raw
+    description: "Kafka-landed e-commerce events, one VARIANT column (src) per record."
+    schema: raw
+    tables:
+      - name: user_events
+        description: "Clickstream events: page views, searches, clicks, add-to-cart, checkout."
+      - name: order_events
+        description: "Order lifecycle events with revenue, quantity, and region."
+      - name: inventory_events
+        description: "Stock adjustments and on-hand levels per product."

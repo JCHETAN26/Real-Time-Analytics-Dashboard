@@ -5,6 +5,15 @@
 *.out
 vendor/
 
+# Compiled service binaries (built in-place by go build)
+ai-layer/anomaly-detector/anomaly-detector
+ai-layer/forecast-engine/forecast-engine
+ai-layer/query-agent/query-agent
+processor/stream-processor/stream-processor
+producers/user-events/user-events
+producers/order-events/order-events
+producers/inventory-events/inventory-events
+
 # ─── Node / Frontend ──────────────────────────────────────────────────────────
 node_modules/
 dist/
@@ -15,6 +24,10 @@ dist/
 # ─── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 /tmp/
+logs/
+
+# ─── Eval / CI artifacts ──────────────────────────────────────────────────────
+eval-report.json
 
 # ─── macOS ────────────────────────────────────────────────────────────────────
 .DS_Store
@@ -31,11 +44,9 @@ infra/connect-plugins/*.jar
 *.pem
 *.key
 secrets/
+infra/snowflake/keys/
 
 # ─── IDE ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
-
-# ─── Go module cache ──────────────────────────────────────────────────────────
-go.sum

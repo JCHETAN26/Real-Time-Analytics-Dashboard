@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/streamsense-ai/ai-layer/query-agent/guard"
 	_ "github.com/snowflakedb/gosnowflake"
 )
 
@@ -348,14 +349,26 @@ func main() {
 		resp.Insight = parsed.Insight
 		resp.FollowUpSuggestions = parsed.FollowUpSuggestions
 
-		// 4. Execute SQL on Snowflake
-		if db != nil && parsed.SQL != "" {
-			results, err := executeSQL(db, parsed.SQL)
-			if err != nil {
-				log.Printf("Snowflake error: %v", err)
-				resp.Insight = fmt.Sprintf("⚠️ SQL executed but failed: %v", err)
-			} else {
-				resp.Results = results
+		// 4. Validate + execute SQL on Snowflake
+		if parsed.SQL != "" {
+			safeSQL, vErr := guard.ValidateSQL(parsed.SQL)
+			if vErr != nil {
+				log.Printf("🛑 Blocked unsafe SQL: %v", vErr)
+				resp.Insight = fmt.Sprintf("⚠️ Generated query was blocked by the safety guardrail: %v", vErr)
+				resp.SQL = parsed.SQL // surface the rejected SQL for transparency
+				c.JSON(200, resp)
+				return
+			}
+			resp.SQL = safeSQL
+
+			if db != nil {
+				results, err := executeSQL(db, safeSQL)
+				if err != nil {
+					log.Printf("Snowflake error: %v", err)
+					resp.Insight = fmt.Sprintf("⚠️ SQL executed but failed: %v", err)
+				} else {
+					resp.Results = results
+				}
 			}
 		}
 

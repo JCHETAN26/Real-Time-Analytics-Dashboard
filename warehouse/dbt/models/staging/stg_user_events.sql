@@ -1,13 +1,14 @@
--- Staging model for User interaction events (clickstream)
+-- Staging model for User interaction events (clickstream).
+-- Reads the Avro payload landed by the Kafka Snowflake Sink Connector.
 WITH raw_events AS (
-    SELECT 
-        src:event_id::STRING AS event_id,
-        src:user_id::STRING AS user_id,
-        src:event_type::STRING AS event_type,
-        src:page::STRING AS page,
-        src:session_id::STRING AS session_id,
-        src:device_type::STRING AS device_type,
-        to_timestamp(src:event_time / 1000) AS event_at
+    SELECT
+        {{ payload() }}:event_id::STRING    AS event_id,
+        {{ payload() }}:user_id::STRING     AS user_id,
+        {{ payload() }}:event_type::STRING  AS event_type,
+        {{ payload() }}:page::STRING        AS page,
+        {{ payload() }}:session_id::STRING  AS session_id,
+        {{ payload() }}:device_type::STRING AS device_type,
+        to_timestamp({{ payload() }}:event_time / 1000) AS event_at
     FROM {{ source('raw', 'user_events') }}
 )
 

@@ -1,0 +1,61 @@
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ StreamSense — Snowflake bootstrap for the Kafka Sink Connector            ║
+-- ║                                                                          ║
+-- ║ Run as ACCOUNTADMIN once. Creates the database, schemas, warehouse, and  ║
+-- ║ a dedicated role/user the Kafka Connect Snowflake Sink uses to land raw  ║
+-- ║ events. The connector authenticates with a key pair (no passwords).      ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+
+USE ROLE ACCOUNTADMIN;
+
+-- ── Warehouse, database, schemas ─────────────────────────────────────────────
+CREATE WAREHOUSE IF NOT EXISTS STREAMSENSE_WH
+    WAREHOUSE_SIZE = 'XSMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE;
+
+CREATE DATABASE IF NOT EXISTS STREAMSENSE;
+
+CREATE SCHEMA IF NOT EXISTS STREAMSENSE.RAW;       -- Kafka-landed events
+CREATE SCHEMA IF NOT EXISTS STREAMSENSE.STAGING;   -- dbt views
+CREATE SCHEMA IF NOT EXISTS STREAMSENSE.MARTS;     -- dbt tables
+
+-- ── Connector role ───────────────────────────────────────────────────────────
+CREATE ROLE IF NOT EXISTS STREAMSENSE_CONNECTOR;
+
+GRANT USAGE ON WAREHOUSE STREAMSENSE_WH TO ROLE STREAMSENSE_CONNECTOR;
+GRANT USAGE ON DATABASE STREAMSENSE TO ROLE STREAMSENSE_CONNECTOR;
+GRANT USAGE ON SCHEMA STREAMSENSE.RAW TO ROLE STREAMSENSE_CONNECTOR;
+
+-- The Snowflake connector auto-creates and loads its landing tables, so it
+-- needs CREATE TABLE/STAGE/PIPE on the RAW schema.
+GRANT CREATE TABLE ON SCHEMA STREAMSENSE.RAW TO ROLE STREAMSENSE_CONNECTOR;
+GRANT CREATE STAGE ON SCHEMA STREAMSENSE.RAW TO ROLE STREAMSENSE_CONNECTOR;
+GRANT CREATE PIPE  ON SCHEMA STREAMSENSE.RAW TO ROLE STREAMSENSE_CONNECTOR;
+-- Allow load into any tables it later creates in RAW.
+GRANT INSERT, SELECT ON FUTURE TABLES IN SCHEMA STREAMSENSE.RAW TO ROLE STREAMSENSE_CONNECTOR;
+
+-- ── Connector user (key-pair auth) ───────────────────────────────────────────
+-- Replace <RSA_PUBLIC_KEY> with the contents of rsa_key.pub (no header/footer,
+-- no line breaks). Generate keys with infra/snowflake/gen_keys.sh.
+CREATE USER IF NOT EXISTS STREAMSENSE_CONNECTOR_USER
+    DEFAULT_ROLE = STREAMSENSE_CONNECTOR
+    DEFAULT_WAREHOUSE = STREAMSENSE_WH
+    MUST_CHANGE_PASSWORD = FALSE
+    COMMENT = 'Kafka Connect Snowflake Sink service account';
+
+-- Run this after pasting your generated public key:
+-- ALTER USER STREAMSENSE_CONNECTOR_USER SET RSA_PUBLIC_KEY = '<RSA_PUBLIC_KEY>';
+
+GRANT ROLE STREAMSENSE_CONNECTOR TO USER STREAMSENSE_CONNECTOR_USER;
+
+-- ── dbt role (transforms RAW → STAGING → MARTS) ──────────────────────────────
+CREATE ROLE IF NOT EXISTS STREAMSENSE_TRANSFORMER;
+GRANT USAGE ON WAREHOUSE STREAMSENSE_WH TO ROLE STREAMSENSE_TRANSFORMER;
+GRANT USAGE ON DATABASE STREAMSENSE TO ROLE STREAMSENSE_TRANSFORMER;
+GRANT USAGE ON ALL SCHEMAS IN DATABASE STREAMSENSE TO ROLE STREAMSENSE_TRANSFORMER;
+GRANT SELECT ON ALL TABLES IN SCHEMA STREAMSENSE.RAW TO ROLE STREAMSENSE_TRANSFORMER;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA STREAMSENSE.RAW TO ROLE STREAMSENSE_TRANSFORMER;
+GRANT CREATE TABLE, CREATE VIEW ON SCHEMA STREAMSENSE.STAGING TO ROLE STREAMSENSE_TRANSFORMER;
+GRANT CREATE TABLE, CREATE VIEW ON SCHEMA STREAMSENSE.MARTS TO ROLE STREAMSENSE_TRANSFORMER;

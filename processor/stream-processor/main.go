@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/confluentinc/confluent-kafka-go/v2/schemaregistry"
@@ -24,6 +24,7 @@ const (
 	schemaRegistry   = "http://localhost:8081"
 	groupID          = "stream-processor-v1"
 	ssePort          = ":8088"
+	dlqTopic         = "dlq"
 )
 
 var (
@@ -80,6 +81,7 @@ func main() {
 		clients[ch] = true
 		clientsMu.Unlock()
 
+		// Stream blocks until the client disconnects; clean up afterward.
 		ctx.Stream(func(w io.Writer) bool {
 			if msg, ok := <-ch; ok {
 				ctx.SSEvent("message", msg)
@@ -88,12 +90,9 @@ func main() {
 			return false
 		})
 
-		ctx.OnDone(func() {
-			clientsMu.Lock()
-			delete(clients, ch)
-			clientsMu.Unlock()
-			close(ch)
-		})
+		clientsMu.Lock()
+		delete(clients, ch)
+		clientsMu.Unlock()
 	})
 	go r.Run(ssePort)
 
@@ -123,21 +122,28 @@ func main() {
 					topic, e.TopicPartition.Partition, e.TopicPartition.Offset)
 
 				// 2. Deserialize (Avro)
-				var payload map[string]interface{}
-				err := deser.DeserializeIntoRecord(topic, e.Value, &payload)
+				obj, err := deser.Deserialize(topic, e.Value)
 				if err != nil {
 					log.Printf("❌ Deserialization error: %s (Topic: %s)", err, topic)
-					// Route to DLQ here in future version
+					// Route malformed messages to the Dead Letter Queue so the
+					// main stream is never blocked by a single bad record.
+					routeToDLQ(p, topic, e.Value, "deserialization_error", err.Error())
+					continue
+				}
+				payload, ok := obj.(map[string]interface{})
+				if !ok {
+					log.Printf("❌ Unexpected payload type %T (Topic: %s)", obj, topic)
+					routeToDLQ(p, topic, e.Value, "type_error", fmt.Sprintf("expected map, got %T", obj))
 					continue
 				}
 
-				// 3. Simple Validation / Enrichment Simulation
-				// Example: Ensure revenue is positive on order events
+				// 3. Validation / Enrichment. Records that fail validation are
+				// sent to the DLQ rather than propagated downstream.
 				if topic == "order-events" {
-					rev, ok := payload["revenue"].(float64)
-					if ok && rev < 0 {
-						fmt.Printf("⚠️ Anomaly Detected: Negative revenue in order %v\n", payload["order_id"])
-						// Could produce to 'anomalies' topic here
+					if rev, ok := payload["revenue"].(float64); ok && rev < 0 {
+						log.Printf("⚠️ Validation failed: negative revenue in order %v", payload["order_id"])
+						routeToDLQ(p, topic, e.Value, "validation_error", "negative revenue")
+						continue
 					}
 				}
 
@@ -165,4 +171,27 @@ func main() {
 	fmt.Println("Closing consumer and producer...")
 	c.Close()
 	p.Close()
+}
+
+// routeToDLQ publishes a failed message to the Dead Letter Queue topic,
+// preserving the original payload and attaching error-context headers so the
+// failure can be triaged later. DLQ production failures are logged but never
+// block the main consume loop.
+func routeToDLQ(p *kafka.Producer, sourceTopic string, value []byte, reason, detail string) {
+	dlq := dlqTopic
+	msg := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &dlq, Partition: kafka.PartitionAny},
+		Value:          value,
+		Headers: []kafka.Header{
+			{Key: "dlq_reason", Value: []byte(reason)},
+			{Key: "dlq_detail", Value: []byte(detail)},
+			{Key: "source_topic", Value: []byte(sourceTopic)},
+			{Key: "failed_at", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
+		},
+	}
+	if err := p.Produce(msg, nil); err != nil {
+		log.Printf("⚠️ Failed to route message to DLQ: %s", err)
+		return
+	}
+	log.Printf("📨 Routed message from %s to DLQ (reason=%s)", sourceTopic, reason)
 }

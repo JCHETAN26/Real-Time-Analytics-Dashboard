@@ -165,9 +165,10 @@ func callGradient(prompt string, maxTokens int) string {
 // ─── WHY ENGINE — Causal Root Cause Analysis ─────────────────────────────────
 
 func runWhyEngine(a Anomaly) RootCauseAnalysis {
-	// Step 1: Simulate multi-signal diagnostic sweep
-	// In production: run real Snowflake queries in parallel
-	signals := simulateDiagnosticSignals(a)
+	// Step 1: Compute multi-signal diagnostics from observed metrics.
+	// In production these come from Snowflake; here a derived provider projects
+	// a coherent metric snapshot from the observed revenue anomaly.
+	signals := computeSignals(snapshotForAnomaly(a))
 
 	// Step 2: Build degraded signal summary for AI
 	degraded := []string{}
@@ -213,73 +214,6 @@ Respond ONLY in this exact JSON format:
 	aiReply := callGradient(prompt, 300)
 	rca := parseRCAResponse(aiReply, a, signals)
 	return rca
-}
-
-func simulateDiagnosticSignals(a Anomaly) []DiagnosticSignal {
-	// Simulate checking 6 key metrics — in production these are real Snowflake queries
-	// For a revenue drop we bias some signals toward failure to make the demo realistic
-	isDrop := a.ChangePC < -20
-
-	paymentOK := !isDrop || rand.Float32() > 0.6
-	trafficOK := !isDrop || rand.Float32() > 0.4
-	cartOK := !isDrop || rand.Float32() > 0.5
-
-	signals := []DiagnosticSignal{
-		{
-			Name:    "Payment Gateway Success Rate",
-			Status:  statusFor(!paymentOK),
-			Value:   valueFor(!paymentOK, "23%", "91%"),
-			Healthy: paymentOK,
-		},
-		{
-			Name:    "Order Placement Rate",
-			Status:  statusFor(!trafficOK),
-			Value:   valueFor(!trafficOK, "↓ 47%", "normal"),
-			Healthy: trafficOK,
-		},
-		{
-			Name:    "Cart Abandonment Rate",
-			Status:  statusFor(!cartOK),
-			Value:   valueFor(!cartOK, "↑ 68%", "32%"),
-			Healthy: cartOK,
-		},
-		{
-			Name:    "Inventory Levels",
-			Status:  "ok",
-			Value:   "adequate",
-			Healthy: true,
-		},
-		{
-			Name:    "API Response Time",
-			Status:  statusFor(!paymentOK && rand.Float32() > 0.5),
-			Value:   valueFor(!paymentOK, "2,400ms", "120ms"),
-			Healthy: paymentOK || rand.Float32() > 0.5,
-		},
-		{
-			Name:    "Average Order Value",
-			Status:  statusFor(!isDrop),
-			Value:   valueFor(isDrop && !cartOK, "↓ $42", "$127"),
-			Healthy: !isDrop || cartOK,
-		},
-	}
-	return signals
-}
-
-func statusFor(degraded bool) string {
-	if degraded {
-		if rand.Float32() > 0.5 {
-			return "critical"
-		}
-		return "degraded"
-	}
-	return "ok"
-}
-
-func valueFor(degraded bool, bad, good string) string {
-	if degraded {
-		return bad
-	}
-	return good
 }
 
 func buildSignalContext(signals []DiagnosticSignal) string {
@@ -339,7 +273,7 @@ func fallbackRCA(a Anomaly, signals []DiagnosticSignal) RootCauseAnalysis {
 	}
 	return RootCauseAnalysis{
 		Hypothesis:   fmt.Sprintf("%s detected as primary failure point in %s.", worst, a.Region),
-		Confidence:   0.72,
+		Confidence:   confidenceFromSignals(signals),
 		Signals:      signals,
 		ImpactPerMin: a.Baseline - a.Current,
 		Recommended:  "Check ops dashboards and payment provider status pages immediately.",

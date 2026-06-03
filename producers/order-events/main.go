@@ -32,6 +32,14 @@ const (
 	topic            = "order-events"
 )
 
+// Product is a catalog item used to generate order events.
+type Product struct {
+	ID       string
+	Name     string
+	Category string
+	Price    float64
+}
+
 var products = []Product{
 	{"E001", "ProPhone 15", "Electronics", 999.99},
 	{"E002", "AirBuds Pro", "Electronics", 249.00},
@@ -99,19 +107,6 @@ func main() {
 }
 
 func generateOrder() OrderEvent {
-	products := []struct {
-		ID       string
-		Name     string
-		Category string
-		Price    float64
-	}{
-		{"E001", "ProPhone 15", "Electronics", 999.99},
-		{"E002", "AirBuds Pro", "Electronics", 249.00},
-		{"E003", "SmartWatch V3", "Electronics", 349.00},
-		{"C001", "Tech Hoodie", "Clothing", 75.00},
-		{"C002", "UltraBoost 24", "Clothing", 190.00},
-		{"J001", "Gold Necklace", "Jewelry", 1200.00},
-	}
 	p := products[rand.Intn(len(products))]
 	qty := int32(rand.Intn(3) + 1)
 	return OrderEvent{

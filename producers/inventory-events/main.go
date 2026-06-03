@@ -28,6 +28,13 @@ const (
 	topic            = "inventory-events"
 )
 
+// Product is a catalog item used to generate inventory events.
+type Product struct {
+	ID       string
+	Name     string
+	Category string
+}
+
 var products = []Product{
 	{"E001", "ProPhone 15", "Electronics"},
 	{"E002", "AirBuds Pro", "Electronics"},

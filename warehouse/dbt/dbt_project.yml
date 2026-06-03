@@ -4,6 +4,12 @@ config-version: 2
 
 profile: 'streamsense_ai'
 
+# The Snowflake Kafka Sink Connector lands each Avro record into a VARIANT
+# column named RECORD_CONTENT (with schematization disabled). Staging models
+# read the payload through this var so the source column is configurable.
+vars:
+  payload_col: RECORD_CONTENT
+
 model-paths: ["models"]
 analysis-paths: ["analyses"]
 test-paths: ["tests"]
