@@ -38,7 +38,7 @@ PURE_MODULES := \
 # ── Tier 1: Tests (no external dependencies) ──────────────────────────────────
 
 .PHONY: test
-test: test-guard test-eval test-diagnostics ## Run all unit tests + offline eval
+test: test-guard test-eval test-rag test-diagnostics ## Run all unit tests + offline eval
 	@echo ""
 	@echo "✅ All tests passed."
 
@@ -53,6 +53,11 @@ test-eval: ## Text-to-SQL eval harness (offline, no API key needed)
 	@cd ai-layer/query-agent && CGO_ENABLED=0 go test ./eval/... -v
 	@echo "── offline eval benchmark ──"
 	@cd ai-layer/query-agent && CGO_ENABLED=0 go run ./eval/cmd/runeval -mode offline
+
+.PHONY: test-rag
+test-rag: ## RAG package tests (embedder, schema, retriever offline fallback)
+	@echo "── rag tests ──"
+	@cd ai-layer/query-agent && CGO_ENABLED=0 go test ./rag/... -v
 
 .PHONY: test-diagnostics
 test-diagnostics: ## Why Engine diagnostic signal tests
@@ -117,11 +122,18 @@ ci: test build vet dbt-validate ## Full CI check — matches GitHub Actions
 # ── Tier 2: Infrastructure ────────────────────────────────────────────────────
 
 .PHONY: infra-up
-infra-up: ## Start Kafka, Zookeeper, Schema Registry, Kafka Connect
+infra-up: ## Start Kafka, Zookeeper, Schema Registry, Kafka Connect, Qdrant
 	@echo "── starting infrastructure ──"
 	@cd infra && docker compose up -d
 	@echo "Waiting for Kafka to be ready..."
 	@scripts/wait-for-kafka.sh
+
+.PHONY: qdrant-status
+qdrant-status: ## Check Qdrant health and collection info
+	@echo "── Qdrant health ──"
+	@curl -sf http://localhost:6333/healthz | python3 -m json.tool 2>/dev/null || echo "Qdrant not reachable"
+	@echo "── streamsense-schema collection ──"
+	@curl -sf http://localhost:6333/collections/streamsense-schema | python3 -m json.tool 2>/dev/null || echo "Collection not found yet"
 
 .PHONY: infra-down
 infra-down: ## Stop and remove all infrastructure containers

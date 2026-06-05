@@ -1,5 +1,5 @@
 -- Staging model for User interaction events (clickstream).
--- Reads the Avro payload landed by the Kafka Snowflake Sink Connector.
+-- Reads the JSON payload loaded by the Olist Snowflake loader.
 WITH raw_events AS (
     SELECT
         {{ payload() }}:event_id::STRING    AS event_id,
@@ -8,7 +8,7 @@ WITH raw_events AS (
         {{ payload() }}:page::STRING        AS page,
         {{ payload() }}:session_id::STRING  AS session_id,
         {{ payload() }}:device_type::STRING AS device_type,
-        to_timestamp({{ payload() }}:event_time / 1000) AS event_at
+        TO_TIMESTAMP_NTZ({{ payload() }}:event_time::NUMBER / 1000) AS event_at
     FROM {{ source('raw', 'user_events') }}
 )
 

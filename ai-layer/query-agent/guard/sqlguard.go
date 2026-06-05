@@ -19,8 +19,9 @@ var forbiddenKeywords = []string{
 
 // allowedSchemas are the only schema prefixes the agent may read from.
 var allowedSchemas = map[string]bool{
-	"marts":   true,
-	"staging": true,
+	"marts":       true,
+	"marts_marts": true,
+	"staging":     true,
 }
 
 var (

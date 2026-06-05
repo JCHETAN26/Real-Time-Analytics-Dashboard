@@ -24,11 +24,11 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: query-agent — guardrail + eval tests
+      - name: query-agent — guardrail + eval + rag tests
         working-directory: ai-layer/query-agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./guard/... ./eval/... -v
+        run: go test ./guard/... ./eval/... ./rag/... -v
 
       - name: anomaly-detector — diagnostics tests
         working-directory: ai-layer/anomaly-detector

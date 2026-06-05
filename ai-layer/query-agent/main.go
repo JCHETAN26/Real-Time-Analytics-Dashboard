@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -15,8 +18,9 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/snowflakedb/gosnowflake"
 	"github.com/streamsense-ai/ai-layer/query-agent/guard"
-	_ "github.com/snowflakedb/gosnowflake"
+	"github.com/streamsense-ai/ai-layer/query-agent/rag"
 )
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -47,6 +51,7 @@ type AIResponse struct {
 	Results             QueryResult `json:"results"`
 	Mode                string      `json:"mode"`
 	SessionID           string      `json:"session_id"`
+	RetrievedTables     []string    `json:"retrieved_tables,omitempty"` // RAG: which tables were injected
 }
 
 type GradientRequest struct {
@@ -60,6 +65,24 @@ type GradientResponse struct {
 	Choices []struct {
 		Message ChatMessage `json:"message"`
 	} `json:"choices"`
+}
+
+// GeminiContent / GeminiRequest / GeminiResponse match the Gemini generateContent API.
+type GeminiPart struct {
+	Text string `json:"text"`
+}
+type GeminiContent struct {
+	Role  string       `json:"role"` // "user" | "model"
+	Parts []GeminiPart `json:"parts"`
+}
+type GeminiRequest struct {
+	Contents         []GeminiContent `json:"contents"`
+	SystemInstruction *GeminiContent `json:"systemInstruction,omitempty"`
+}
+type GeminiResponse struct {
+	Candidates []struct {
+		Content GeminiContent `json:"content"`
+	} `json:"candidates"`
 }
 
 // ─── Session Store (In-memory for hackathon) ─────────────────────────────────
@@ -87,37 +110,21 @@ func appendHistory(sessionID string, msg ChatMessage) {
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 
-func buildSystemPrompt(mode string) string {
+// buildSystemPrompt constructs the LLM system prompt using only the schema
+// tables retrieved by the RAG pipeline for the current question.
+// retrievedSchema is the formatted schema block from rag.Retriever.RetrieveSchema.
+// retrievedTables is a slice of qualified table names for the log line.
+func buildSystemPrompt(retrievedSchema, mode string) string {
 	base := `You are StreamSense, an intelligent e-commerce analytics AI. You have access to a real-time Snowflake data warehouse.
 
-## Snowflake Schema:
+## Relevant Snowflake Tables (retrieved for this query):
 
-### marts.fct_orders
-order_id STRING, user_id STRING, product_id STRING, product_name STRING, category STRING,
-order_status STRING (placed|paid|fulfilled|refunded|cancelled), revenue FLOAT, quantity INTEGER,
-region STRING, order_time TIMESTAMP, updated_at TIMESTAMP
-
-### marts.dim_users
-user_id STRING, user_segment STRING (new|returning|vip|at_risk|churned), country STRING,
-device_type STRING (mobile|desktop|tablet), first_seen TIMESTAMP, last_seen TIMESTAMP,
-total_orders INTEGER, lifetime_value FLOAT
-
-### marts.agg_revenue_per_minute
-minute_bucket TIMESTAMP, total_revenue FLOAT, order_count INTEGER, avg_order_value FLOAT, region STRING
-
-### marts.fct_product_performance
-product_id STRING, product_name STRING, category STRING, views INTEGER, add_to_cart INTEGER,
-purchases INTEGER, revenue FLOAT, conversion_rate FLOAT, window_start TIMESTAMP, window_end TIMESTAMP
-
-### staging.stg_user_events
-event_id STRING, user_id STRING, event_type STRING (page_view|search|click|add_to_cart|checkout),
-page STRING, session_id STRING, device_type STRING, event_time TIMESTAMP
-
+` + retrievedSchema + `
 ## Rules:
 - Use CURRENT_TIMESTAMP() for "now", DATEADD for windows
 - Always LIMIT results (default 20)
 - Only SELECT statements
-- Use fully qualified names (marts.table_name)
+- Use fully qualified names (schema.table_name)
 
 ## ALWAYS respond in this exact JSON format:
 {
@@ -139,6 +146,16 @@ page STRING, session_id STRING, device_type STRING, event_time TIMESTAMP
 	}
 
 	return base
+}
+
+// ─── AI Dispatch ──────────────────────────────────────────────────────────────
+// callAI routes to Gemini if GEMINI_API_KEY is set, otherwise Gradient AI.
+
+func callAI(messages []ChatMessage) (string, error) {
+	if os.Getenv("GEMINI_API_KEY") != "" {
+		return callGemini(messages)
+	}
+	return callGradientAI(messages)
 }
 
 // ─── Gradient AI Call ─────────────────────────────────────────────────────────
@@ -197,6 +214,75 @@ func callGradientAI(messages []ChatMessage) (string, error) {
 	return gradientResp.Choices[0].Message.Content, nil
 }
 
+// ─── Gemini AI Call ───────────────────────────────────────────────────────────
+
+func callGemini(messages []ChatMessage) (string, error) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	model := os.Getenv("GEMINI_MODEL")
+	if model == "" {
+		model = "gemini-2.0-flash"
+	}
+
+	// Split system message from conversation messages
+	var systemPrompt string
+	var contents []GeminiContent
+	for _, m := range messages {
+		switch m.Role {
+		case "system":
+			systemPrompt = m.Content
+		case "user":
+			contents = append(contents, GeminiContent{
+				Role:  "user",
+				Parts: []GeminiPart{{Text: m.Content}},
+			})
+		case "assistant":
+			contents = append(contents, GeminiContent{
+				Role:  "model",
+				Parts: []GeminiPart{{Text: m.Content}},
+			})
+		}
+	}
+
+	reqBody := GeminiRequest{Contents: contents}
+	if systemPrompt != "" {
+		reqBody.SystemInstruction = &GeminiContent{
+			Parts: []GeminiPart{{Text: systemPrompt}},
+		}
+	}
+
+	bodyBytes, _ := json.Marshal(reqBody)
+	url := fmt.Sprintf(
+		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
+		model, apiKey,
+	)
+	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("Gemini request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("Gemini error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var geminiResp GeminiResponse
+	if err := json.Unmarshal(body, &geminiResp); err != nil {
+		return "", fmt.Errorf("could not parse Gemini response: %s", string(body))
+	}
+	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("empty response from Gemini")
+	}
+	return geminiResp.Candidates[0].Content.Parts[0].Text, nil
+}
+
 // ─── Snowflake Query Execution ────────────────────────────────────────────────
 
 func executeSQL(db *sql.DB, query string) (QueryResult, error) {
@@ -227,23 +313,123 @@ func executeSQL(db *sql.DB, query string) (QueryResult, error) {
 	return result, nil
 }
 
+// ─── Snowflake key-pair helpers ───────────────────────────────────────────────
+
+type snowflakeConfig struct {
+	Account       string
+	User          string
+	Database      string
+	Schema        string
+	Warehouse     string
+	Authenticator string
+	PrivateKey    *rsa.PrivateKey
+}
+
+func decodePEM(data []byte) (*pem.Block, []byte) {
+	return pem.Decode(data)
+}
+
+func parsePrivateKey(der []byte) (*rsa.PrivateKey, error) {
+	key, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, err
+	}
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key is not RSA")
+	}
+	return rsaKey, nil
+}
+
+func buildSnowflakeDSN(cfg *snowflakeConfig) (string, error) {
+	sfCfg := &gosnowflake.Config{
+		Account:       cfg.Account,
+		User:          cfg.User,
+		Database:      cfg.Database,
+		Schema:        "MARTS_MARTS",
+		Warehouse:     cfg.Warehouse,
+		Authenticator: gosnowflake.AuthTypeJwt,
+		PrivateKey:    cfg.PrivateKey,
+	}
+	return gosnowflake.DSN(sfCfg)
+}
+
+// ─── Snowflake connection ─────────────────────────────────────────────────────
+
+func openSnowflake() (*sql.DB, error) {
+	// Key-pair auth (bypasses MFA) — preferred when SNOWFLAKE_PRIVATE_KEY_PATH is set
+	keyPath := os.Getenv("SNOWFLAKE_PRIVATE_KEY_PATH")
+	if keyPath != "" {
+		account := os.Getenv("SNOWFLAKE_ACCOUNT")
+		user := os.Getenv("SNOWFLAKE_USER")
+		warehouse := os.Getenv("SNOWFLAKE_WAREHOUSE")
+		if warehouse == "" {
+			warehouse = "STREAMSENSE_WH"
+		}
+		if account == "" || user == "" {
+			return nil, fmt.Errorf("SNOWFLAKE_ACCOUNT and SNOWFLAKE_USER required with key-pair auth")
+		}
+
+		keyBytes, err := os.ReadFile(keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read private key %s: %w", keyPath, err)
+		}
+
+		block, _ := decodePEM(keyBytes)
+		if block == nil {
+			return nil, fmt.Errorf("failed to decode PEM from %s", keyPath)
+		}
+		parsedKey, err := parsePrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse PKCS8 key: %w", err)
+		}
+
+		cfg := &snowflakeConfig{
+			Account:       account,
+			User:          user,
+			Database:      "STREAMSENSE",
+			Schema:        "MARTS",
+			Warehouse:     warehouse,
+			Authenticator: "snowflake_jwt",
+			PrivateKey:    parsedKey,
+		}
+		dsn, err := buildSnowflakeDSN(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return sql.Open("snowflake", dsn)
+	}
+
+	// Fallback: plain DSN (password auth)
+	dsn := os.Getenv("SNOWFLAKE_DSN")
+	if dsn == "" {
+		return nil, nil // no Snowflake configured — demo mode
+	}
+	return sql.Open("snowflake", dsn)
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 func main() {
-	dsn := os.Getenv("SNOWFLAKE_DSN")
 	var db *sql.DB
-	var err error
 
-	if dsn != "" {
-		db, err = sql.Open("snowflake", dsn)
-		if err != nil {
-			log.Fatalf("Failed to open Snowflake: %s", err)
-		}
+	db, err := openSnowflake()
+	if err != nil {
+		log.Fatalf("Failed to open Snowflake: %s", err)
+	}
+	if db != nil {
 		defer db.Close()
+		if err := db.PingContext(context.Background()); err != nil {
+			log.Fatalf("Snowflake ping failed: %s", err)
+		}
 		log.Println("✅ Snowflake connected!")
 	} else {
-		log.Println("⚠️  SNOWFLAKE_DSN not set — SQL execution disabled (demo mode)")
+		log.Println("⚠️  No Snowflake credentials — SQL execution disabled (demo mode)")
 	}
+
+	// Initialise the RAG retriever — indexes all warehouse tables into Qdrant.
+	// Continues gracefully if Qdrant is not running.
+	retriever := rag.NewRetriever()
 
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
@@ -252,8 +438,10 @@ func main() {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"status":    "StreamSense AI Online",
-			"snowflake": dsn != "",
+			"snowflake": db != nil,
+			"gemini":    os.Getenv("GEMINI_API_KEY") != "",
 			"gradient":  os.Getenv("GRADIENT_AI_KEY") != "",
+			"rag":       retriever.IsAvailable(),
 		})
 	})
 
@@ -283,9 +471,13 @@ func main() {
 			mode = "technical"
 		}
 
-		// 1. Build messages: system + history + new question
+		// 1. RAG: retrieve the most relevant tables for this question.
+		schemaCtx, retrievedTables, _ := retriever.RetrieveSchema(req.Question, 3)
+		fmt.Printf("📚 RAG: injecting tables: %v\n", retrievedTables)
+
+		// Build messages: system (with retrieved schema) + history + question
 		messages := []ChatMessage{
-			{Role: "system", Content: buildSystemPrompt(mode)},
+			{Role: "system", Content: buildSystemPrompt(schemaCtx, mode)},
 		}
 
 		// Append session history
@@ -299,8 +491,8 @@ func main() {
 
 		fmt.Printf("🤖 AI Query [session:%s] [mode:%s]: %s\n", sessionID, mode, req.Question)
 
-		// 2. Call Gradient AI
-		rawReply, err := callGradientAI(messages)
+		// 2. Call AI (Gemini if GEMINI_API_KEY set, otherwise Gradient AI)
+		rawReply, err := callAI(messages)
 		if err != nil {
 			log.Printf("Gradient AI error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("AI Error: %v", err)})
@@ -332,9 +524,10 @@ func main() {
 		}
 
 		resp := AIResponse{
-			Question:  req.Question,
-			Mode:      mode,
-			SessionID: sessionID,
+			Question:        req.Question,
+			Mode:            mode,
+			SessionID:       sessionID,
+			RetrievedTables: retrievedTables,
 		}
 
 		if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {

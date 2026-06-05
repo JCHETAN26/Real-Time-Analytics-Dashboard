@@ -1,5 +1,5 @@
 -- Staging model for Order and Sales events.
--- Reads the Avro payload landed by the Kafka Snowflake Sink Connector.
+-- Reads the JSON payload loaded by the Olist Snowflake loader.
 WITH raw_orders AS (
     SELECT
         {{ payload() }}:order_id::STRING     AS order_id,
@@ -11,7 +11,7 @@ WITH raw_orders AS (
         {{ payload() }}:revenue::FLOAT       AS revenue_usd,
         {{ payload() }}:quantity::INT        AS quantity,
         {{ payload() }}:region::STRING       AS region,
-        to_timestamp({{ payload() }}:order_time / 1000) AS ordered_at
+        TO_TIMESTAMP_NTZ({{ payload() }}:order_time::NUMBER / 1000) AS ordered_at
     FROM {{ source('raw', 'order_events') }}
 )
 

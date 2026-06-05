@@ -13,6 +13,8 @@ processor/stream-processor/stream-processor
 producers/user-events/user-events
 producers/order-events/order-events
 producers/inventory-events/inventory-events
+producers/olist-replayer/olist-replayer
+producers/olist-replayer/snowflake-loader/olist-snowflake-loader
 
 # ─── Node / Frontend ──────────────────────────────────────────────────────────
 node_modules/
@@ -39,7 +41,12 @@ infra/data/
 # ─── Kafka connector (large binary, download separately) ──────────────────────
 infra/connect-plugins/*.jar
 
-# ─── Secrets ──────────────────────────────────────────────────────────────────
+# ─── Olist dataset CSVs (large files, download separately) ───────────────────
+producers/olist-replayer/data/*.csv
+
+# ─── dbt build artifacts ──────────────────────────────────────────────────────
+warehouse/dbt/target/
+warehouse/dbt/dbt_packages/
 .env*
 *.pem
 *.key
